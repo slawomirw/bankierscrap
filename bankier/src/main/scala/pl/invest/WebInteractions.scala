@@ -6,13 +6,12 @@ import io.circe.parser.*
 import java.net.http.HttpClient.{Redirect, Version}
 import java.net.http.HttpResponse.BodyHandlers
 import java.net.http.{HttpClient, HttpRequest}
-import java.net.{Authenticator, URI, URL}
+import java.net.{URI, URL}
 import java.sql.{Connection, DriverManager}
 import java.time.format.DateTimeFormatter
 import java.time.{Duration, LocalDate, LocalDateTime, Period}
 import java.util.function.Consumer
-import scala.io.{BufferedSource, Source}
-import scala.math.Fractional.Implicits.infixFractionalOps
+import scala.io.Source
 import scala.util.Using
 
 private case class Trade(number: String, ticker: String, side: Char, price: BigDecimal, amount: Int, currency: String,
@@ -27,30 +26,27 @@ object WebInteractions {
 
   private val currencyExchangeMap = Map(
     "WSE" -> "PLN",
-    "NSQ" -> "USD"
+    "NSQ" -> "USD",
+    "NYQ" -> "USD"
   )
+
+  private val exchanges = Map(
+    "AAPL" -> "NSQ",
+    "AMZN" -> "NSQ",
+    "FB" -> "NSQ",
+    "GOOGL" -> "NSQ",
+    "MSFT" -> "NSQ",
+    "NFLX" -> "NSQ",
+    "NVDA" -> "NSQ",
+    "TSLA" -> "NSQ",
+    "WMT" -> "NYQ",
+    "UBER" -> "NYQ"
+  ).withDefault { key => "NSQ" }
 
   def main(args: Array[String]): Unit = {
 
-    //Array("PKOBP", "PZU", "PKNORLEN", "KGHM", "PEKAO", "PGE").foreach { ticker =>
-    //  connectToHttpServerAndReadResponse(s"https://www.bankier.pl/new-charts/get-data?symbol=${ticker}&intraday=true&today=true&type=area")
-    //}
-
     initializeDbTrades(args(0))
     initializeDbPrices()
-
-    inDb("Selecting from database")(connection => {
-      val statement = connection.createStatement()
-      val resultSet = statement.executeQuery("SELECT SUM(amount) amount, side FROM trades WHERE chamber='PL' AND ticker='IZS' GROUP BY side")
-      while resultSet.next() do {
-        println(s"${resultSet.getString("amount")}, ${resultSet.getString("side")}")
-        //        println(s"${resultSet.getString("number")}, ${resultSet.getString("ticker")}, ${resultSet.getString("side")}, " +
-        //          s"${resultSet.getBigDecimal("price")}, ${resultSet.getInt("amount")}, ${resultSet.getString("currency")}, " +
-        //          s"${resultSet.getString("chamber")}, ${resultSet.getTimestamp("realizationTime")}, " +
-        //          s"${resultSet.getDate("settledDate")}, ${resultSet.getBigDecimal("value")}, ${resultSet.getBigDecimal("fees")}, " +
-        //          s"${resultSet.getBigDecimal("valueWithFees")}")
-      }
-    })
   }
 
   def getUrlContent(url: URL) = {
@@ -121,7 +117,7 @@ object WebInteractions {
         val statement = connection.createStatement()
         val prices = tickersAndDates.map {
           case (ticker, date, "PL") => (s"$ticker:WSE", date)
-          case (ticker, date, "US") => (s"$ticker:NSQ", date)
+          case (ticker, date, "US") => (s"$ticker:${exchanges(ticker)}", date)
         }.foldLeft(Map.empty[String, LocalDate]) {
           case (acc, (ticker, date)) if !acc.contains(ticker) => acc.updated(ticker, date)
           case (acc, _) => acc

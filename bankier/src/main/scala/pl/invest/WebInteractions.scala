@@ -1,9 +1,7 @@
 package pl.invest
 
 import io.circe.*
-import io.circe.Json.JArray
 import io.circe.parser.*
-import scalaj.http.{Http, HttpOptions}
 
 import java.net.http.HttpClient.{Redirect, Version}
 import java.net.http.HttpResponse.BodyHandlers
@@ -118,25 +116,28 @@ object WebInteractions {
         def next(): (String, LocalDate, String) = (resultSet.getString("ticker"), resultSet.getDate("settledDate").toLocalDate, resultSet.getString("chamber"))
       }.to(LazyList)
 
+      val startDate = tickersAndDates.head._2
       inDb("Store shares prices")(connection => {
         val statement = connection.createStatement()
-        val (tradingDates, prices) = tickersAndDates.map {
+        val prices = tickersAndDates.map {
           case (ticker, date, "PL") => (s"$ticker:WSE", date)
           case (ticker, date, "US") => (s"$ticker:NSQ", date)
         }.foldLeft(Map.empty[String, LocalDate]) {
           case (acc, (ticker, date)) if !acc.contains(ticker) => acc.updated(ticker, date)
           case (acc, _) => acc
-        }.foldLeft((Seq[LocalDate](), Map.empty[String, Seq[(LocalDate, BigDecimal)]])) {
-          case ((Seq(), prices), (ticker, date)) =>
-            val tradingDates = getTradingDates(ticker, date)
-            (tradingDates, prices ++ getPricesFTOf(ticker, tradingDates))
-          case ((tradingDates, prices), (ticker, date)) => (tradingDates, prices ++ getPricesFTOf(ticker, tradingDates))
+        }.foldLeft(Map.empty[String, Seq[(LocalDate, BigDecimal)]]) {
+          case (prices, (ticker, date)) => {
+            getFTIdentifier(ticker) match {
+              case Some(ftTicker) => prices ++ getPricesFTOf(ftTicker, startDate)
+              case None => throw new RuntimeException(s"Ticker's $ticker FT id not found")
+            }
+          }
         }
 
         statement.executeUpdate("CREATE TABLE prices (ticker VARCHAR(255), currency CHAR(3), date DATE, close DECIMAL(10,2), volume INT)")
 
-        prices.foreach {
-          case Array(ticker: String, details: Seq[(LocalDate, BigDecimal)]) =>
+        prices.foreachEntry {
+          case (ticker, details) =>
             val equity = ticker.substring(0, ticker.indexOf(":"))
             val currency = currencyExchangeMap(ticker.substring(ticker.indexOf(":") + 1))
             details.foreach {
@@ -149,20 +150,24 @@ object WebInteractions {
     })
   }
 
-  def getFTIdentifier(ticker: String): String = {
+  def getFTIdentifier(ticker: String): Option[String] = {
     val url = new URL(s"https://markets.ft.com/data/equities/tearsheet/summary?s=$ticker")
     val content = getUrlContent(url)
-    val section = content.substring(content.indexOf("mod-tearsheet-add-alert") + 23, content.indexOf("</section>"))
+    val section = content.substring(content.indexOf("mod-tearsheet-add-alert") + 23,
+        content.indexOf("</section>", content.indexOf("mod-tearsheet-add-alert") + 23))
       .replaceAll("\\&quot;", "'")
 
-    section.substring(
-      section.indexOf("'issueId'\\:") + 10,
-      section.indexOf(",", section.indexOf("'issueId'\\:") + 10)
-    ).replaceAll("[,:']", "")
+    println("Ticker: " + ticker)
+
+    Option(section.substring(
+      section.indexOf("'issueId':") + "'issueId':".length,
+      section.indexOf(",", section.indexOf("'issueId':") + "'issueId':".length - 1)
+    )).filter(_.nonEmpty).map(_.replaceAll("'", "")).map(_.toInt.toString)
   }
 
-  def getPricesFTOf(symbol: String, tradingDates: Seq[LocalDate]): Map[String, Seq[(LocalDate, BigDecimal)]] = {
-    val days = Period.between(tradingDates.head, LocalDate.now()).getDays
+  def getPricesFTOf(symbol: String, startDate: LocalDate): Map[String, Seq[(LocalDate, BigDecimal)]] = {
+    val period = Period.between(startDate, LocalDate.now())
+    val days = period.getDays + period.getMonths * 30 + period.getYears * 365
 
     val request = HttpRequest.newBuilder
       .uri(URI.create(s"https://markets.ft.com/data/chartapi/series"))
@@ -220,7 +225,6 @@ object WebInteractions {
       .version(Version.HTTP_2)
       .followRedirects(Redirect.NORMAL)
       .connectTimeout(Duration.ofSeconds(10))
-      .authenticator(Authenticator.getDefault)
       .build
     val response = client.send(request, BodyHandlers.ofString).body()
     response

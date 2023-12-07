@@ -2,6 +2,7 @@ package pl.invest
 
 import io.circe.*
 import io.circe.parser.*
+import org.h2.util.StringUtils
 
 import java.net.http.HttpClient.{Redirect, Version}
 import java.net.http.HttpResponse.BodyHandlers
@@ -30,7 +31,7 @@ object WebInteractions {
     "NYQ" -> "USD"
   )
 
-  private val exchanges = Map(
+  private val exchanges = Map("US" -> Map(
     "AAPL" -> "NSQ",
     "AMZN" -> "NSQ",
     "FB" -> "NSQ",
@@ -40,11 +41,16 @@ object WebInteractions {
     "NVDA" -> "NSQ",
     "TSLA" -> "NSQ",
     "WMT" -> "NYQ",
-    "UBER" -> "NYQ"
-  ).withDefault { key => "NSQ" }
+    "UBER" -> "NYQ",
+    "DIS" -> "NSQ"
+  ).withDefault { * => "NSQ" },
+    "PL" -> Map().withDefault{ * => "WSE" }
+  )
+
+  private var inactiveShares = Set.empty[String]
 
   def main(args: Array[String]): Unit = {
-
+    initializeInactiveShares(args(1))
     initializeDbTrades(args(0))
     initializeDbPrices()
   }
@@ -54,6 +60,16 @@ object WebInteractions {
     val content = source.mkString
     source.close()
     content
+  }
+
+  private def initializeInactiveShares(filePath: String): Unit = {
+    Using(Source.fromResource(filePath)) { source =>
+      val content = source.mkString
+      inactiveShares = content.split("\n").toSet
+    }.toEither match {
+      case Left(exception) => println(exception); exception.printStackTrace()
+      case Right(_) => println("Inactive shares file processed.")
+    }
   }
 
   private def initializeDbTrades(filePath: String): Unit = {
@@ -109,25 +125,28 @@ object WebInteractions {
       val tickersAndDates = new Iterator[(String, LocalDate, String)] {
         def hasNext: Boolean = resultSet.next()
 
-        def next(): (String, LocalDate, String) = (resultSet.getString("ticker"), resultSet.getDate("settledDate").toLocalDate, resultSet.getString("chamber"))
+        def next(): (String, LocalDate, String) = (
+          resultSet.getString("ticker"),
+          resultSet.getDate("settledDate").toLocalDate,
+          resultSet.getString("chamber"))
       }.to(LazyList)
 
       val startDate = tickersAndDates.head._2
       inDb("Store shares prices")(connection => {
         val statement = connection.createStatement()
         val prices = tickersAndDates.map {
-          case (ticker, date, "PL") => (s"$ticker:WSE", date)
-          case (ticker, date, "US") => (s"$ticker:${exchanges(ticker)}", date)
+          case (ticker, date, market) => (s"$ticker:${exchanges(market)(ticker)}", date)
         }.foldLeft(Map.empty[String, LocalDate]) {
           case (acc, (ticker, date)) if !acc.contains(ticker) => acc.updated(ticker, date)
           case (acc, _) => acc
         }.foldLeft(Map.empty[String, Seq[(LocalDate, BigDecimal)]]) {
-          case (prices, (ticker, date)) => {
+          case (prices, (ticker, _)) if (!inactive(ticker))  =>
             getFTIdentifier(ticker) match {
-              case Some(ftTicker) => prices ++ getPricesFTOf(ftTicker, startDate)
+              case Some(ftIdentifier) => prices ++ getPricesFTOf(ftIdentifier, ticker, startDate)
               case None => throw new RuntimeException(s"Ticker's $ticker FT id not found")
             }
-          }
+          case (prices, (ticker, _)) =>
+            prices ++ Map(ticker -> Seq.empty[(LocalDate, BigDecimal)]) // this means that price equals total purchase price
         }
 
         statement.executeUpdate("CREATE TABLE prices (ticker VARCHAR(255), currency CHAR(3), date DATE, close DECIMAL(10,2), volume INT)")
@@ -146,22 +165,24 @@ object WebInteractions {
     })
   }
 
+  private def inactive(ticker: String): Boolean = inactiveShares.contains(ticker)
+
   def getFTIdentifier(ticker: String): Option[String] = {
     val url = new URL(s"https://markets.ft.com/data/equities/tearsheet/summary?s=$ticker")
     val content = getUrlContent(url)
     val section = content.substring(content.indexOf("mod-tearsheet-add-alert") + 23,
         content.indexOf("</section>", content.indexOf("mod-tearsheet-add-alert") + 23))
-      .replaceAll("\\&quot;", "'")
+      .replaceAll("&quot;", "'")
 
     println("Ticker: " + ticker)
 
     Option(section.substring(
       section.indexOf("'issueId':") + "'issueId':".length,
       section.indexOf(",", section.indexOf("'issueId':") + "'issueId':".length - 1)
-    )).filter(_.nonEmpty).map(_.replaceAll("'", "")).map(_.toInt.toString)
+    )).filter(_.nonEmpty).map(_.replaceAll("'", "")).filter(v => StringUtils.isNumber(v))
   }
 
-  def getPricesFTOf(symbol: String, startDate: LocalDate): Map[String, Seq[(LocalDate, BigDecimal)]] = {
+  def getPricesFTOf(symbol: String, ticker: String, startDate: LocalDate): Map[String, Seq[(LocalDate, BigDecimal)]] = {
     val period = Period.between(startDate, LocalDate.now())
     val days = period.getDays + period.getMonths * 30 + period.getYears * 365
 
@@ -198,12 +219,12 @@ object WebInteractions {
     val response: String = connectPostToHttpServerAndReadResponse(request)
 
     parse(response) match {
-      case Left(dates) => Map.empty[String, Seq[(LocalDate, BigDecimal)]]
+      case Left(_) => Map.empty[String, Seq[(LocalDate, BigDecimal)]]
       case Right(ftSharePriceJson) =>
         val cursor: HCursor = ftSharePriceJson.hcursor
         val dates = cursor.downField("Dates").as[Seq[String]].getOrElse(Seq.empty[String])
         val prices = cursor.downField("Elements").downArray.downField("DataSeries").downArray.downField("values").as[Seq[BigDecimal]].getOrElse(Seq.empty[BigDecimal])
-        Map(symbol -> dates.zip(prices).map {
+        Map(ticker -> dates.zip(prices).map {
           case (date, price) => (LocalDate.parse(date, DateTimeFormatter.ISO_DATE), price)
         })
     }

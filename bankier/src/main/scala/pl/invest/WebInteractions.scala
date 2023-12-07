@@ -32,17 +32,9 @@ object WebInteractions {
   )
 
   private val exchanges = Map("US" -> Map(
-    "AAPL" -> "NSQ",
-    "AMZN" -> "NSQ",
-    "FB" -> "NSQ",
-    "GOOGL" -> "NSQ",
-    "MSFT" -> "NSQ",
-    "NFLX" -> "NSQ",
-    "NVDA" -> "NSQ",
-    "TSLA" -> "NSQ",
     "WMT" -> "NYQ",
     "UBER" -> "NYQ",
-    "DIS" -> "NSQ"
+    "DIS" -> "NYQ"
   ).withDefault { * => "NSQ" },
     "PL" -> Map().withDefault{ * => "WSE" }
   )
@@ -55,7 +47,7 @@ object WebInteractions {
     initializeDbPrices()
   }
 
-  def getUrlContent(url: URL) = {
+  def getUrlContent(url: URL): String = {
     val source = Source.fromURL(url)
     val content = source.mkString
     source.close()
@@ -140,7 +132,7 @@ object WebInteractions {
           case (acc, (ticker, date)) if !acc.contains(ticker) => acc.updated(ticker, date)
           case (acc, _) => acc
         }.foldLeft(Map.empty[String, Seq[(LocalDate, BigDecimal)]]) {
-          case (prices, (ticker, _)) if (!inactive(ticker))  =>
+          case (prices, (ticker, _)) if !inactive(ticker)  =>
             getFTIdentifier(ticker) match {
               case Some(ftIdentifier) => prices ++ getPricesFTOf(ftIdentifier, ticker, startDate)
               case None => throw new RuntimeException(s"Ticker's $ticker FT id not found")
@@ -168,18 +160,21 @@ object WebInteractions {
   private def inactive(ticker: String): Boolean = inactiveShares.contains(ticker)
 
   def getFTIdentifier(ticker: String): Option[String] = {
+    println(s"Ticker: $ticker ...")
     val url = new URL(s"https://markets.ft.com/data/equities/tearsheet/summary?s=$ticker")
     val content = getUrlContent(url)
     val section = content.substring(content.indexOf("mod-tearsheet-add-alert") + 23,
         content.indexOf("</section>", content.indexOf("mod-tearsheet-add-alert") + 23))
       .replaceAll("&quot;", "'")
 
-    println("Ticker: " + ticker)
-
     Option(section.substring(
       section.indexOf("'issueId':") + "'issueId':".length,
       section.indexOf(",", section.indexOf("'issueId':") + "'issueId':".length - 1)
-    )).filter(_.nonEmpty).map(_.replaceAll("'", "")).filter(v => StringUtils.isNumber(v))
+    )).filter(_.nonEmpty).map(_.replaceAll("'", "")).filter(v => StringUtils.isNumber(v)) match
+      case Some(ftIdentifier) => Some(ftIdentifier)
+      case None =>
+        println(s"FT identifier not found for ticker $ticker: \n$content")
+        None
   }
 
   def getPricesFTOf(symbol: String, ticker: String, startDate: LocalDate): Map[String, Seq[(LocalDate, BigDecimal)]] = {
@@ -230,14 +225,14 @@ object WebInteractions {
     }
   }
 
-  def getTradingDates(ticker: String, start: LocalDate) = {
+  def getTradingDates(ticker: String, start: LocalDate): Seq[LocalDate] = {
     // Map content to case class
     val body = connectToHttpServerAndReadResponse(s"https://markets.ft.com/data/equities/tearsheet/summary?s=$ticker")
     val json = parse(body)
     Seq[LocalDate]()
   }
 
-  protected def connectPostToHttpServerAndReadResponse(request: HttpRequest) = {
+  protected def connectPostToHttpServerAndReadResponse(request: HttpRequest): String = {
     val client = HttpClient.newBuilder
       .version(Version.HTTP_2)
       .followRedirects(Redirect.NORMAL)

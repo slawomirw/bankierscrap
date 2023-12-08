@@ -113,23 +113,25 @@ object WebInteractions {
 
     inDb("Dates and shares read")(connection => {
       val statement = connection.createStatement()
-      val resultSet = statement.executeQuery("SELECT DISTINCT ticker, settledDate, chamber FROM trades ORDER BY settledDate")
-      val tickersAndDates = new Iterator[(String, LocalDate, String)] {
+      val resultSet = statement.executeQuery("SELECT DISTINCT ticker, settledDate, chamber, price FROM trades ORDER BY settledDate")
+      val tickersAndDates = new Iterator[(String, LocalDate, String, BigDecimal)] {
         def hasNext: Boolean = resultSet.next()
 
-        def next(): (String, LocalDate, String) = (
+        def next(): (String, LocalDate, String, BigDecimal) = (
           resultSet.getString("ticker"),
           resultSet.getDate("settledDate").toLocalDate,
-          resultSet.getString("chamber"))
+          resultSet.getString("chamber"),
+          resultSet.getBigDecimal("price")
+        )
       }.to(LazyList)
 
       val startDate = tickersAndDates.head._2
       inDb("Store shares prices")(connection => {
         val statement = connection.createStatement()
         val prices = tickersAndDates.map {
-          case (ticker, date, market) => (s"$ticker:${exchanges(market)(ticker)}", date)
-        }.foldLeft(Map.empty[String, LocalDate]) {
-          case (acc, (ticker, date)) if !acc.contains(ticker) => acc.updated(ticker, date)
+          case (ticker, _, market, startPrice) => (s"$ticker:${exchanges(market)(ticker)}", startPrice)
+        }.foldLeft(Map.empty[String, BigDecimal]) {
+          case (acc, (ticker, startPrice)) if !acc.contains(ticker) => acc.updated(ticker, startPrice)
           case (acc, _) => acc
         }.foldLeft(Map.empty[String, Seq[(LocalDate, BigDecimal)]]) {
           case (prices, (ticker, _)) if !inactive(ticker)  =>
@@ -137,8 +139,11 @@ object WebInteractions {
               case Some(ftIdentifier) => prices ++ getPricesFTOf(ftIdentifier, ticker, startDate)
               case None => throw new RuntimeException(s"Ticker's $ticker FT id not found")
             }
-          case (prices, (ticker, _)) =>
-            prices ++ Map(ticker -> Seq.empty[(LocalDate, BigDecimal)]) // this means that price equals total purchase price
+          case (prices, (ticker, startPrice)) =>
+            prices.find(_._2.nonEmpty).map {
+              case (_, details) =>
+                prices ++ Map(ticker -> details.map (d => (d._1, startPrice)))
+            }.getOrElse(prices)
         }
 
         statement.executeUpdate("CREATE TABLE prices (ticker VARCHAR(255), currency CHAR(3), date DATE, close DECIMAL(10,2), volume INT)")
@@ -149,8 +154,12 @@ object WebInteractions {
             val currency = currencyExchangeMap(ticker.substring(ticker.indexOf(":") + 1))
             details.foreach {
               case (date, close) =>
-                statement.executeUpdate(s"INSERT INTO prices VALUES (" +
-                  s"'$equity', '$currency', '${date.format(DateTimeFormatter.ISO_DATE)}', $close, -1)")
+                val sqlInsert = s"INSERT INTO prices VALUES (" +
+                  s"'$equity', '$currency', '${date.format(DateTimeFormatter.ISO_DATE)}', $close, -1)"
+
+                println(s"Inserting price: $sqlInsert")
+
+                statement.executeUpdate(sqlInsert)
             }
         }
       })
@@ -160,7 +169,7 @@ object WebInteractions {
   private def inactive(ticker: String): Boolean = inactiveShares.contains(ticker)
 
   def getFTIdentifier(ticker: String): Option[String] = {
-    println(s"Ticker: $ticker ...")
+    print(s"Ticker: $ticker ...")
     val url = new URL(s"https://markets.ft.com/data/equities/tearsheet/summary?s=$ticker")
     val content = getUrlContent(url)
     val section = content.substring(content.indexOf("mod-tearsheet-add-alert") + 23,
@@ -178,6 +187,7 @@ object WebInteractions {
   }
 
   def getPricesFTOf(symbol: String, ticker: String, startDate: LocalDate): Map[String, Seq[(LocalDate, BigDecimal)]] = {
+    print(s" $symbol ...")
     val period = Period.between(startDate, LocalDate.now())
     val days = period.getDays + period.getMonths * 30 + period.getYears * 365
 
@@ -218,18 +228,12 @@ object WebInteractions {
       case Right(ftSharePriceJson) =>
         val cursor: HCursor = ftSharePriceJson.hcursor
         val dates = cursor.downField("Dates").as[Seq[String]].getOrElse(Seq.empty[String])
-        val prices = cursor.downField("Elements").downArray.downField("DataSeries").downArray.downField("values").as[Seq[BigDecimal]].getOrElse(Seq.empty[BigDecimal])
+        val prices = cursor.downField("Elements").downN(0).downField("ComponentSeries").downN(3).downField("Values").as[Seq[BigDecimal]].getOrElse(Seq.empty[BigDecimal])
+        println(s" $ticker: ${dates.length} dates, ${prices.length} prices")
         Map(ticker -> dates.zip(prices).map {
-          case (date, price) => (LocalDate.parse(date, DateTimeFormatter.ISO_DATE), price)
+          case (date, price) => (LocalDate.parse(date.substring(0, 10), DateTimeFormatter.ISO_DATE), price)
         })
     }
-  }
-
-  def getTradingDates(ticker: String, start: LocalDate): Seq[LocalDate] = {
-    // Map content to case class
-    val body = connectToHttpServerAndReadResponse(s"https://markets.ft.com/data/equities/tearsheet/summary?s=$ticker")
-    val json = parse(body)
-    Seq[LocalDate]()
   }
 
   protected def connectPostToHttpServerAndReadResponse(request: HttpRequest): String = {

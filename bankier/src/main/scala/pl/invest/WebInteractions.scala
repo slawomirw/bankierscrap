@@ -36,7 +36,7 @@ object WebInteractions {
     "UBER" -> "NYQ",
     "DIS" -> "NYQ"
   ).withDefault { * => "NSQ" },
-    "PL" -> Map().withDefault{ * => "WSE" }
+    "PL" -> Map().withDefault { * => "WSE" }
   )
 
   private var inactiveShares = Set.empty[String]
@@ -134,7 +134,7 @@ object WebInteractions {
           case (acc, (ticker, startPrice)) if !acc.contains(ticker) => acc.updated(ticker, startPrice)
           case (acc, _) => acc
         }.foldLeft(Map.empty[String, Seq[(LocalDate, BigDecimal)]]) {
-          case (prices, (ticker, _)) if !inactive(ticker)  =>
+          case (prices, (ticker, _)) if !inactive(ticker) =>
             getFTIdentifier(ticker) match {
               case Some(ftIdentifier) => prices ++ getPricesFTOf(ftIdentifier, ticker, startDate)
               case None => throw new RuntimeException(s"Ticker's $ticker FT id not found")
@@ -142,7 +142,7 @@ object WebInteractions {
           case (prices, (ticker, startPrice)) =>
             prices.find(_._2.nonEmpty).map {
               case (_, details) =>
-                prices ++ Map(ticker -> details.map (d => (d._1, startPrice)))
+                prices ++ Map(ticker -> details.map(d => (d._1, startPrice)))
             }.getOrElse(prices)
         }
 
@@ -245,18 +245,6 @@ object WebInteractions {
     val response = client.send(request, BodyHandlers.ofString).body()
     response
   }
-
-  protected def connectToHttpServerAndReadResponse(address: String): String = {
-    val url = new URL(address)
-    val connection = url.openConnection()
-    connection.setDoOutput(true)
-    connection.setRequestProperty("Content-Type", "application/json")
-    connection.setConnectTimeout(5000) // 5 seconds
-    connection.setReadTimeout(5000) // 5 seconds
-    connection.connect()
-    Source.fromInputStream(connection.getInputStream).mkString
-  }
-
 
   private def inDb(operationName: String)(operation: Consumer[Connection]): Unit = {
     val DATABASE_URL: String = s"jdbc:h2:mem:invest;DB_CLOSE_DELAY=-1"

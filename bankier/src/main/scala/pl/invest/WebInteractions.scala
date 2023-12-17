@@ -52,7 +52,7 @@ object WebInteractions {
   private def initializeFxRates(from: String, to: String): Unit = {
     getFTFxIdentifier(s"$from$to").foreach { symbol =>
 
-      val tickersAndDates: LazyList[(String, LocalDate, String, BigDecimal)] = tickerTradeDates
+      val tickersAndDates: List[(String, LocalDate, String, BigDecimal)] = tickerTradeDates
       val startDate = tickersAndDates.head._2
 
       inDb("Fx rates initialized")(connection => {
@@ -61,9 +61,7 @@ object WebInteractions {
         getFxRatesFTOf(symbol, startDate).map { content =>
           println(s"currency pair: $from$to, date: ${content._1}, rate: ${content._2}")
           val sqlInsert = s"INSERT INTO fx_rates VALUES (" +
-            s"'$from', s'$to', '${content._1.format(DateTimeFormatter.ISO_DATE)}', ${content._2})"
-
-          println(s"Inserting fx rate: $sqlInsert")
+            s"'$from', '$to', '${content._1.format(DateTimeFormatter.ISO_DATE)}', ${content._2})"
           statement.executeUpdate(sqlInsert)
         }
       })
@@ -76,7 +74,7 @@ object WebInteractions {
       inactiveShares = content.split("\n").toSet
     }.toEither match {
       case Left(exception) => println(exception); exception.printStackTrace()
-      case Right(_) => println("Inactive shares file processed.")
+      case Right(_) => println("Inactive shares file processed")
     }
   }
 
@@ -121,13 +119,13 @@ object WebInteractions {
       })
     }.toEither match {
       case Left(exception) => println(exception); exception.printStackTrace()
-      case Right(_) => println("Transactions file processed.")
+      case Right(_) => println("Transactions file processed")
     }
   }
 
   private def initializeDbPrices(): Unit = {
 
-    val tickersAndDates: LazyList[(String, LocalDate, String, BigDecimal)] = tickerTradeDates
+    val tickersAndDates: List[(String, LocalDate, String, BigDecimal)] = tickerTradeDates
 
     val startDate = tickersAndDates.head._2
     inDb("Store shares prices")(connection => {
@@ -169,8 +167,8 @@ object WebInteractions {
     })
   }
 
-  private def tickerTradeDates: LazyList[(String, LocalDate, String, BigDecimal)] = {
-    var tickersAndTradeDates: LazyList[(String, LocalDate, String, BigDecimal)] = LazyList.empty
+  private def tickerTradeDates: List[(String, LocalDate, String, BigDecimal)] = {
+    var tickersAndTradeDates: List[(String, LocalDate, String, BigDecimal)] = List.empty
     inDb("Dates and shares read")(connection => {
       val statement = connection.createStatement()
       val resultSet = statement.executeQuery("SELECT DISTINCT ticker, realizationTime, chamber, price FROM trades ORDER BY realizationTime ASC")
@@ -183,7 +181,7 @@ object WebInteractions {
           resultSet.getString("chamber"),
           resultSet.getBigDecimal("price")
         )
-      }.to(LazyList)
+      }.to(LazyList).toList
     })
     tickersAndTradeDates
   }
@@ -214,11 +212,10 @@ object WebInteractions {
     val content = getUrlContent(url)
     val divIndex = content.indexOf("<div data-module-name=\"SymbolChartApp\"") + "data-module-name=\"SymbolChartApp\"".length
     val section = content.substring(divIndex, content.indexOf(">", divIndex + 1)).replaceAll("&quot;", "'")
+    val issueTagValue = section.indexOf("'issueID':") + "'issueID':".length
 
-    Option(section.substring(
-      section.indexOf("'issueId':") + "'issueId':".length,
-      section.indexOf(",", section.indexOf("'issueId':") + "'issueId':".length - 1)
-    )).filter(_.nonEmpty).map(_.replaceAll("'", "")).filter(v => StringUtils.isNumber(v)) match
+    Option(section.substring(issueTagValue, section.indexOf(",", issueTagValue - 1)))
+      .filter(_.nonEmpty).map(_.replaceAll("'", "")).filter(v => StringUtils.isNumber(v)) match
       case Some(ftIdentifier) => Some(ftIdentifier)
       case None =>
         println(s"FT Fx identifier not found for ticker $ticker: \n$content")

@@ -20,11 +20,7 @@ private case class Trade(number: String, ticker: String, side: Char, price: BigD
                          chamber: String, realizationTime: LocalDateTime, settledDate: LocalDate,
                          sharesValue: BigDecimal, fees: BigDecimal, sharesValueWithFees: BigDecimal)
 
-class WebInteractions {
-
-}
-
-object WebInteractions {
+object DatasetInitialization {
 
   private val currencyExchangeMap = Map(
     "WSE" -> "PLN",
